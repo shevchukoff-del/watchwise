@@ -83,7 +83,7 @@ export default function Home() {
             </p>
 
             <a className="scroll-link" href="#advisor-form">
-              Начать анализ
+              Посмотреть за меня
             </a>
           </div>
         </section>
@@ -110,7 +110,7 @@ export default function Home() {
             </div>
 
             <button className="primary-button" type="submit" disabled={isLoading}>
-              {isLoading ? "Проверяем..." : "Проверить видео"}
+              {isLoading ? "Выносим вердикт..." : "🎯 Получить вердикт"}
             </button>
 
             <details className="advanced-settings">
