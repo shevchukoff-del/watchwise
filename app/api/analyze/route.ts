@@ -29,6 +29,17 @@ type SupadataJob = SupadataTranscript & {
   result?: unknown;
 };
 
+type StructuredAnalysis = {
+  title: string;
+  verdict: "Смотреть" | "Смотреть частично" | "Достаточно конспекта" | "Не стоит тратить время";
+  usefulnessScore: number;
+  waterPercent: number;
+  summary: string;
+  keyPoints: string[];
+  recommendation: string;
+  analysis: string;
+};
+
 const SUPADATA_BASE_URL = "https://api.supadata.ai/v1/transcript";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
@@ -73,7 +84,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({
-      analysis,
+      ...analysis,
       transcriptLength: transcript.text.length,
       transcriptLanguage: transcript.language || input.lang,
       availableLanguages: transcript.availableLanguages,
@@ -288,28 +299,17 @@ async function analyzeTranscript({
   model: string;
   customPrompt: string;
   transcript: string;
-}) {
+}): Promise<StructuredAnalysis> {
   const userPrompt = [
     customPrompt
       ? `Пользовательский промпт:\n${customPrompt}`
       : "Пользовательский промпт не указан.",
-    "Проанализируй транскрипт YouTube-видео в формате Markdown. Сделай ответ живым, но не рекламным: используй 1 уместный эмодзи в заголовке каждой секции.",
-    "Обязательно верни ВСЕ разделы ниже. Не останавливайся после вердикта. Если данных в транскрипте мало, всё равно заполни каждый раздел короткой честной фразой.",
-    "Структура ответа строго такая:",
-    "## 🎯 Вердикт",
-    "Выбери только один основной вариант: смотреть / пропустить. Добавь 1 короткое объяснение. Если ролик стоит смотреть быстрее, укажи это как совет, но не как отдельный вердикт.",
-    "## 🧭 Кратко за 5 пунктов",
-    "Пять коротких bullet-пунктов по сути ролика.",
-    "## 💡 Главные идеи",
-    "Самые полезные инсайты без воды.",
-    "## 👤 Кому подойдёт",
-    "Для какой аудитории ролик будет полезен.",
-    "## ⏭️ Кому можно пропустить",
-    "Кому не стоит тратить время.",
-    "## 🏃 Можно ли слушать на пробежке?",
-    "Ответ да/нет и почему.",
-    "## ⭐ Оценка пользы",
-    "Оценка от 1 до 10 и строка звёзд, например: ★★★★★★★☆☆☆ 7/10.",
+    "Проанализируй транскрипт YouTube-видео и верни только валидный JSON без Markdown и пояснений вокруг.",
+    "Не выдумывай факты за пределами транскрипта. Если данных мало, прямо скажи об этом в summary и recommendation.",
+    "Схема JSON:",
+    '{ "title": "короткое название ролика или пустая строка", "verdict": "Смотреть | Смотреть частично | Достаточно конспекта | Не стоит тратить время", "usefulnessScore": 8, "waterPercent": 30, "summary": "2-4 предложения", "keyPoints": ["3-5 коротких пунктов"], "recommendation": "практичная рекомендация" }',
+    "verdict должен быть строго одним из четырех вариантов: Смотреть, Смотреть частично, Достаточно конспекта, Не стоит тратить время.",
+    "usefulnessScore — целое число от 1 до 10. waterPercent — целое число от 0 до 100.",
     `Транскрипт:\n${transcript}`,
   ].join("\n\n");
 
@@ -318,7 +318,7 @@ async function analyzeTranscript({
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://youtube-video-advisor.vercel.app",
+      "HTTP-Referer": "https://watchwise-chi.vercel.app",
       "X-Title": "WatchWise",
     },
     body: JSON.stringify({
@@ -358,7 +358,120 @@ async function analyzeTranscript({
     throw new UserFacingError("OpenRouter вернул пустой ответ.", 502);
   }
 
-  return content.trim();
+  return normalizeAnalysis(content.trim());
+}
+
+function normalizeAnalysis(content: string): StructuredAnalysis {
+  const parsed = parseAnalysisJson(content);
+  const verdict = normalizeVerdict(parsed.verdict);
+  const usefulnessScore = clampInteger(parsed.usefulnessScore, 1, 10, 5);
+  const waterPercent = clampInteger(parsed.waterPercent, 0, 100, 50);
+  const keyPoints = Array.isArray(parsed.keyPoints)
+    ? parsed.keyPoints.map((item) => stringify(item)).filter(Boolean).slice(0, 5)
+    : [];
+
+  const summary =
+    stringify(parsed.summary) ||
+    "Не удалось надежно выделить краткое содержание из ответа модели.";
+  const recommendation =
+    stringify(parsed.recommendation) ||
+    "Используйте краткий разбор и решите, нужен ли полный просмотр.";
+
+  const normalized: StructuredAnalysis = {
+    title: stringify(parsed.title),
+    verdict,
+    usefulnessScore,
+    waterPercent,
+    summary,
+    keyPoints:
+      keyPoints.length > 0
+        ? keyPoints
+        : ["Модель не вернула отдельные ключевые пункты."],
+    recommendation,
+    analysis: "",
+  };
+
+  normalized.analysis = [
+    `## Вердикт: ${normalized.verdict}`,
+    `Польза: ${normalized.usefulnessScore}/10. Воды: ${normalized.waterPercent}%.`,
+    normalized.summary,
+    "### Ключевые пункты",
+    ...normalized.keyPoints.map((point) => `- ${point}`),
+    "### Рекомендация",
+    normalized.recommendation,
+  ].join("\n\n");
+
+  return normalized;
+}
+
+function parseAnalysisJson(content: string): Record<string, unknown> {
+  const cleaned = content
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
+      } catch {
+        return {
+          summary: content,
+          recommendation: "Ответ модели пришел в свободном формате, поэтому WatchWise показывает его как краткое резюме.",
+        };
+      }
+    }
+
+    return {
+      summary: content,
+      recommendation: "Ответ модели пришел в свободном формате, поэтому WatchWise показывает его как краткое резюме.",
+    };
+  }
+}
+
+function normalizeVerdict(value: unknown): StructuredAnalysis["verdict"] {
+  const verdict = stringify(value);
+
+  if (
+    verdict === "Смотреть" ||
+    verdict === "Смотреть частично" ||
+    verdict === "Достаточно конспекта" ||
+    verdict === "Не стоит тратить время"
+  ) {
+    return verdict;
+  }
+
+  const lower = verdict.toLowerCase();
+
+  if (lower.includes("част")) {
+    return "Смотреть частично";
+  }
+
+  if (lower.includes("консп")) {
+    return "Достаточно конспекта";
+  }
+
+  if (lower.includes("не стоит") || lower.includes("пропуст")) {
+    return "Не стоит тратить время";
+  }
+
+  return "Смотреть";
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = typeof value === "number" ? value : Number.parseInt(stringify(value), 10);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(parsed)));
 }
 
 function normalizeTranscript(value: unknown) {
