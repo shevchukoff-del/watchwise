@@ -70,6 +70,10 @@ function formatAuthError(message: string) {
       : "Supabase временно ограничил повторный запрос. Подождите немного и попробуйте снова.";
   }
 
+  if (normalized.includes("email rate limit")) {
+    return "Supabase временно ограничил отправку писем на этот email. Подождите несколько минут или войдите, если аккаунт уже создан.";
+  }
+
   if (normalized.includes("invalid login credentials")) {
     return "Неверный email или пароль.";
   }
