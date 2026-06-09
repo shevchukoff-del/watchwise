@@ -60,6 +60,31 @@ function verdictTone(verdict: string) {
   return "watch";
 }
 
+function formatAuthError(message: string) {
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("security purposes") || normalized.includes("after")) {
+    const seconds = message.match(/\d+/)?.[0];
+    return seconds
+      ? `Supabase временно ограничил повторный запрос. Подождите ${seconds} секунд и попробуйте снова.`
+      : "Supabase временно ограничил повторный запрос. Подождите немного и попробуйте снова.";
+  }
+
+  if (normalized.includes("invalid login credentials")) {
+    return "Неверный email или пароль.";
+  }
+
+  if (normalized.includes("email not confirmed")) {
+    return "Email ещё не подтверждён. Проверьте письмо от Supabase.";
+  }
+
+  if (normalized.includes("user already registered") || normalized.includes("already")) {
+    return "Аккаунт с таким email уже есть. Попробуйте войти.";
+  }
+
+  return message;
+}
+
 export default function Home() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [url, setUrl] = useState("");
@@ -243,7 +268,7 @@ export default function Home() {
         : await supabase.auth.signUp({ email: email.trim(), password });
 
     if (authResult.error) {
-      setAuthError(authResult.error.message);
+      setAuthError(formatAuthError(authResult.error.message));
     } else if (action === "sign-up") {
       setStatusMessage("Аккаунт создан. Если Supabase просит подтверждение, проверьте почту.");
     }
